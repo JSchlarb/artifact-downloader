@@ -39,20 +39,10 @@ Below is an example of how to use Artifact Downloader as a sidecar container in 
 ```yaml
 ingress-nginx:
   controller:
-    extraContainers:
-      - name: maxmind
-        image: ghcr.io/jschlarb/artifact-downloader/downloader:0.0.2
-        env:
-          - name: GITHUB_OWNER
-            value: Skiddle-ID
-          - name: GITHUB_REPOSITORY
-            value: geoip2-mirror
-          - name: GITHUB_ARTEFACTS
-            value: "GeoLite2-ASN.mmdb,GeoLite2-City.mmdb"
-          - name: DOWNLOAD_PATH
-            value: /etc/ingress-controller/geoip/
-          - name: CHECK_INTERVAL
-            value: 1h
+    extraInitContainers:
+      - &container
+        name: init-geoip-downloader
+        image: ghcr.io/jschlarb/artifact-downloader/downloader:0.0.3
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -64,7 +54,7 @@ ingress-nginx:
           seccompProfile:
             type: RuntimeDefault
         volumeMounts:
-          - name: maxmind
+          - name: geoip
             mountPath: /etc/ingress-controller/geoip
         resources:
           limits:
@@ -72,12 +62,38 @@ ingress-nginx:
           requests:
             cpu: 10m
             memory: 12Mi
+        env:
+          - &env-owner
+            name: GITHUB_OWNER
+            value: Skiddle-ID
+          - &env-repo
+            name: GITHUB_REPOSITORY
+            value: geoip2-mirror
+          - &env-artifacts
+            name: GITHUB_ARTEFACTS
+            value: "GeoLite2-ASN.mmdb,GeoLite2-City.mmdb"
+          - &env-download-path
+            name: DOWNLOAD_PATH
+            value: /etc/ingress-controller/geoip
+    extraContainers:
+      - <<: *container
+        name: geoip-downloader
+        env:
+          - *env-download-path
+          - *env-artifacts
+          - *env-repo
+          - *env-owner
+          - name: CHECK_INTERVAL
+            value: 12h
     extraVolumeMounts:
-      - name: maxmind
+      - name: geoip
         mountPath: /etc/ingress-controller/geoip/
     extraVolumes:
-      - name: maxmind
+      - name: geoip
         emptyDir: { }
+    config:
+      use-geoip2: "true"
+      geoip2-autoreload-in-minutes: "60"
 ```
 
 ## Building and Running Locally

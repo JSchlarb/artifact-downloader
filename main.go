@@ -13,45 +13,46 @@ import (
 	"time"
 )
 
-func download(url, artefact, downloadPath string) error {
-	needDownload := true
+var (
+	client *http.Client
+	buffer = make([]byte, 32*1024)
+)
 
+func download(url, artefact, downloadPath string) error {
 	localFilePath := filepath.Join(downloadPath, artefact)
 	log.Printf("Processing artefact: %s", artefact)
 
+	needDownload := true
 	if fi, err := os.Stat(localFilePath); err == nil {
 		localModTime := fi.ModTime()
 
 		req, err := http.NewRequest("HEAD", url, nil)
 		if err != nil {
-			log.Printf("Error creating HEAD request for %s: %v", url, err)
-		} else {
-			resp, err := http.DefaultClient.Do(req)
+			return fmt.Errorf("error creating HEAD request for %s: %v", url, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("error performing HEAD request for %s: %v", url, err)
+		}
+		resp.Body.Close()
+
+		if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
+			remoteModTime, err := time.Parse(http.TimeFormat, lastModified)
 			if err != nil {
-				log.Printf("Error performing HEAD request for %s: %v", url, err)
-			} else {
-				resp.Body.Close() // No content expected.
-				lastModified := resp.Header.Get("Last-Modified")
-				if lastModified != "" {
-					remoteModTime, err := time.Parse(http.TimeFormat, lastModified)
-					if err != nil {
-						log.Printf("Error parsing Last-Modified header for %s: %v", url, err)
-					} else if !remoteModTime.After(localModTime) {
-						log.Printf("No new version available for %s (remote mod time: %s, local mod time: %s)",
-							artefact, remoteModTime, localModTime)
-						needDownload = false
-					}
-				} else {
-					log.Printf("No Last-Modified header for %s; proceeding to download", url)
-				}
+				log.Printf("Error parsing Last-Modified header for %s: %v", url, err)
+			} else if !remoteModTime.After(localModTime) {
+				log.Printf("No new version available for %s (remote: %s, local: %s)",
+					artefact, remoteModTime, localModTime)
+				needDownload = false
 			}
+		} else {
+			log.Printf("No Last-Modified header for %s; proceeding to download", url)
 		}
 	}
 
-	// Download the file if needed.
 	if needDownload {
 		log.Printf("Downloading %s from %s", artefact, url)
-		resp, err := http.Get(url)
+		resp, err := client.Get(url)
 		if err != nil {
 			return fmt.Errorf("error downloading %s: %v", artefact, err)
 		}
@@ -64,27 +65,26 @@ func download(url, artefact, downloadPath string) error {
 		tmpFile := filepath.Join(downloadPath, fmt.Sprintf(".tmp-%s", artefact))
 		out, err := os.Create(tmpFile)
 		if err != nil {
+			os.Remove(tmpFile)
 			return fmt.Errorf("error creating file %s: %v", tmpFile, err)
 		}
-		// small buffer but honestly that's okay-ish.
-		_, err = io.CopyBuffer(out, resp.Body, make([]byte, 1024))
-		out.Close()
-		if err != nil {
+
+		if _, err := io.CopyBuffer(out, resp.Body, buffer); err != nil {
+			out.Close()
 			return fmt.Errorf("error saving file %s: %v", tmpFile, err)
 		}
+		out.Close()
 		log.Printf("Successfully downloaded %s", artefact)
 
 		if err := os.Rename(tmpFile, localFilePath); err != nil {
 			return fmt.Errorf("error moving file %s to %s: %v", tmpFile, localFilePath, err)
 		}
-		log.Printf("Successfully move tmp file %s to %s", tmpFile, localFilePath)
+		log.Printf("Moved tmp file %s to %s", tmpFile, localFilePath)
 
-		// Update the local file's modification time with the remote header (if available).
 		if lm := resp.Header.Get("Last-Modified"); lm != "" {
 			if remoteModTime, err := time.Parse(http.TimeFormat, lm); err == nil {
-				err := os.Chtimes(localFilePath, time.Now(), remoteModTime)
-				if err != nil {
-					return fmt.Errorf("error changing last-modified header for %s: %v", artefact, err)
+				if err := os.Chtimes(localFilePath, time.Now(), remoteModTime); err != nil {
+					return fmt.Errorf("error updating mod time for %s: %v", artefact, err)
 				}
 			} else {
 				return fmt.Errorf("error parsing Last-Modified header for %s: %v", artefact, err)
@@ -94,25 +94,19 @@ func download(url, artefact, downloadPath string) error {
 	return nil
 }
 
-// checkAndDownload processes each artefact: it downloads the asset from GitHub if the
-// remote file is newer than the local copy or if the file does not exist locally.
 func checkAndDownload(owner, repo, artefacts, downloadPath string) {
-	// Ensure the download directory exists.
 	if err := os.MkdirAll(downloadPath, 0755); err != nil {
 		log.Printf("Failed to create download directory %q: %v", downloadPath, err)
 		return
 	}
 
-	artefactList := strings.Split(artefacts, ",")
-	for _, artefact := range artefactList {
+	for _, artefact := range strings.Split(artefacts, ",") {
 		artefact = strings.TrimSpace(artefact)
 		if artefact == "" {
 			continue
 		}
-
 		url := fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/%s", owner, repo, artefact)
-		err := download(url, artefact, downloadPath)
-		if err != nil {
+		if err := download(url, artefact, downloadPath); err != nil {
 			log.Printf("Failed to download artefact %s: %v", artefact, err)
 		}
 	}
@@ -129,11 +123,12 @@ func main() {
 	}
 
 	checkIntervalStr := os.Getenv("CHECK_INTERVAL")
-	checkInterval := time.Hour
 	runOnce := false
-	if checkIntervalStr == "0" || checkIntervalStr == "" {
+	checkInterval := time.Hour
+
+	if checkIntervalStr == "" || checkIntervalStr == "0" {
 		runOnce = true
-		log.Printf("Check interval set to 0 or empty; running only once")
+		log.Println("Check interval set to 0 or empty; running only once")
 	} else {
 		var err error
 		checkInterval, err = time.ParseDuration(checkIntervalStr)
@@ -142,16 +137,22 @@ func main() {
 		}
 	}
 
-	log.Println("Starting scheduled download check...")
-
-	checkAndDownload(owner, repo, artefacts, downloadPath)
+	client = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:    5,
+			IdleConnTimeout: 30 * time.Second,
+			MaxConnsPerHost: 2,
+		},
+	}
 
 	if runOnce {
+		checkAndDownload(owner, repo, artefacts, downloadPath)
 		log.Println("Run once mode enabled; exiting after initial check.")
 		return
 	}
 
-	// Setup signal handling for graceful shutdown.
+	log.Println("Starting scheduled download check...")
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
