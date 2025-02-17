@@ -41,7 +41,7 @@ ingress-nginx:
   controller:
     extraContainers:
       - name: maxmind
-        image: ghcr.io/jschlarb/artifact-downloader/downloader:0.0.1
+        image: ghcr.io/jschlarb/artifact-downloader/downloader:0.0.2
         env:
           - name: GITHUB_OWNER
             value: Skiddle-ID
