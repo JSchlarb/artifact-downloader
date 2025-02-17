@@ -68,10 +68,10 @@ ingress-nginx:
             mountPath: /etc/ingress-controller/geoip
         resources:
           limits:
-            memory: 32Mi
+            memory: 12Mi
           requests:
             cpu: 10m
-            memory: 32Mi
+            memory: 12Mi
     extraVolumeMounts:
       - name: maxmind
         mountPath: /etc/ingress-controller/geoip/

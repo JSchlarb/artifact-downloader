@@ -66,7 +66,8 @@ func download(url, artefact, downloadPath string) error {
 		if err != nil {
 			return fmt.Errorf("error creating file %s: %v", tmpFile, err)
 		}
-		_, err = io.Copy(out, resp.Body)
+		// small buffer but honestly that's okay-ish.
+		_, err = io.CopyBuffer(out, resp.Body, make([]byte, 1024))
 		out.Close()
 		if err != nil {
 			return fmt.Errorf("error saving file %s: %v", tmpFile, err)
